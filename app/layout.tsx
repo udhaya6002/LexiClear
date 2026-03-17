@@ -27,11 +27,11 @@ export default function RootLayout({
   return (
     <html lang="en">
       <body
-        className={`${geistSans.variable} ${geistMono.variable} antialiased flex bg-slate-50 dark:bg-slate-950`}
+        className={`${geistSans.variable} ${geistMono.variable} antialiased flex bg-slate-50 dark:bg-slate-950 min-h-screen`}
       >
         <AuthProvider>
            <Sidebar />
-           <div className="flex-1 w-full h-full min-w-0 flex flex-col">
+           <div className="flex-1 w-full h-screen min-w-0 flex flex-col relative overflow-hidden">
               {children}
            </div>
         </AuthProvider>
