@@ -1,24 +1,40 @@
 "use client";
 
-import { useState, useRef } from "react";
-import { UploadCloud, AlertTriangle, ShieldCheck, Info, Loader2, FileText, CheckCircle2 } from "lucide-react";
+import { useState, useRef, useEffect } from "react";
+import { UploadCloud, FileText, CheckCircle2, Send, Paperclip, Bot, User, Scale, ShieldAlert, Target, Loader2 } from "lucide-react";
 
+interface AIResponse {
+  summary: string[];
+  legal_score: number;
+  safety_score: number;
+  overall_score: number;
+}
+
+interface Message {
+  id: string;
+  role: "user" | "assistant";
+  content: string; // The original text or a short description of the file uploaded
+  analysis?: AIResponse; // Only populated for assistant messages
+}
 
 export default function Home() {
-  const [text, setText] = useState("");
-  const [isLoading, setIsLoading] = useState(false);
+  const [messages, setMessages] = useState<Message[]>([]);
+  const [inputValue, setInputValue] = useState("");
+  const [isAnalyzing, setIsAnalyzing] = useState(false);
   const [isPdfLoading, setIsPdfLoading] = useState(false);
-  const [results, setResults] = useState<{ summary: string[]; risk_score: number } | null>(null);
-  const [error, setError] = useState("");
   const fileInputRef = useRef<HTMLInputElement>(null);
+  const messagesEndRef = useRef<HTMLDivElement>(null);
+
+  // Auto-scroll to bottom
+  useEffect(() => {
+    messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
+  }, [messages, isAnalyzing]);
 
   const handleFileUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (!file) return;
     
     setIsPdfLoading(true);
-    setError("");
-    
     try {
       // Dynamically import pdfjs-dist only on the client side
       const pdfjsLib = await import("pdfjs-dist");
@@ -28,9 +44,7 @@ export default function Home() {
       const pdf = await pdfjsLib.getDocument({ data: arrayBuffer }).promise;
       let fullText = "";
       
-      // Limit extraction to first 20 pages to avoid performance freezing
       const maxPages = Math.min(pdf.numPages, 20);
-      
       for (let i = 1; i <= maxPages; i++) {
         const page = await pdf.getPage(i);
         const textContent = await page.getTextContent();
@@ -43,31 +57,46 @@ export default function Home() {
           fullText = fullText.substring(0, 20000) + "\n\n...[Document Truncated to 20,000 characters]";
       }
       
-      setText(fullText);
+      // Immediately submit the extracted text as a user message
+      await submitAnalysis(fullText, `Analyzed document: ${file.name}`);
+      
     } catch (err: any) {
       console.error(err);
-      setError("Failed to parse PDF. Please try copying and pasting the text instead.");
+      alert("Failed to parse PDF. Please try copying and pasting the text instead.");
     } finally {
       setIsPdfLoading(false);
       if (fileInputRef.current) fileInputRef.current.value = "";
     }
   };
 
-  const handleAnalyze = async () => {
-    if (!text.trim()) {
-      setError("Please paste a document or upload a PDF first.");
-      return;
-    }
+  const handleTextSubmit = async (e?: React.FormEvent) => {
+    if (e) e.preventDefault();
+    if (!inputValue.trim()) return;
     
-    let submitText = text;
-    if (submitText.length > 25000) {
-      submitText = submitText.substring(0, 25000);
-    }
-    
-    setError("");
-    setIsLoading(true);
-    setResults(null);
+    const textToAnalyze = inputValue;
+    setInputValue("");
+    await submitAnalysis(textToAnalyze, textToAnalyze);
+  };
+
+  const submitAnalysis = async (rawText: string, displayMessage: string) => {
+    if (isAnalyzing) return;
+    setIsAnalyzing(true);
+
+    // 1. Add user message
+    const userMsg: Message = {
+      id: Date.now().toString(),
+      role: "user",
+      content: displayMessage
+    };
+    setMessages(prev => [...prev, userMsg]);
+
     try {
+      // 2. Call API
+      let submitText = rawText;
+      if (submitText.length > 25000) {
+        submitText = submitText.substring(0, 25000);
+      }
+
       const response = await fetch("/api/analyze", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -76,198 +105,246 @@ export default function Home() {
       
       const data = await response.json();
       
-      if (!response.ok) {
-        throw new Error(data.error || "Analysis failed. Please try again.");
-      }
+      if (!response.ok) throw new Error(data.error || "Analysis failed.");
       
-      if(data.error) {
-         throw new Error(data.error);
-      }
-      setResults({
-        summary: data.summary || [],
-        risk_score: data.risk_score || 1
-      });
+      // 3. Add AI Response message
+      const aiMsg: Message = {
+        id: (Date.now() + 1).toString(),
+        role: "assistant",
+        content: "Analysis complete.",
+        analysis: data
+      };
+      setMessages(prev => [...prev, aiMsg]);
+
     } catch (err: any) {
-      setError(err.message || "An unexpected error occurred.");
+      console.error(err);
+      const errorMsg: Message = {
+        id: (Date.now() + 1).toString(),
+        role: "assistant",
+        content: `Error: ${err.message || "An unexpected error occurred."}`
+      };
+      setMessages(prev => [...prev, errorMsg]);
     } finally {
-      setIsLoading(false);
+      setIsAnalyzing(false);
     }
   };
 
-  const getRiskDetails = (score: number) => {
-    if (score <= 3) return { color: "text-emerald-500", bg: "bg-emerald-500", label: "Low Risk", icon: ShieldCheck };
-    if (score <= 6) return { color: "text-amber-500", bg: "bg-amber-500", label: "Moderate Risk", icon: Info };
-    return { color: "text-rose-500", bg: "bg-rose-500", label: "High Risk", icon: AlertTriangle };
+  // Score Color Helper
+  const getScoreColor = (score: number, type: "safety" | "legal" | "overall") => {
+    if (type === "safety") {
+      if (score >= 8) return "text-emerald-500 bg-emerald-500/10 border-emerald-500/20";
+      if (score >= 5) return "text-amber-500 bg-amber-500/10 border-amber-500/20";
+      return "text-rose-500 bg-rose-500/10 border-rose-500/20";
+    }
+    // Blue/Indigo scale for legal and overall
+    if (score >= 8) return "text-indigo-500 bg-indigo-500/10 border-indigo-500/20";
+    if (score >= 5) return "text-cyan-500 bg-cyan-500/10 border-cyan-500/20";
+    return "text-slate-500 bg-slate-500/10 border-slate-500/20";
   };
 
   return (
-    <div className="min-h-screen bg-slate-50 dark:bg-slate-950 font-sans text-slate-900 dark:text-slate-100 selection:bg-indigo-500/30">
-      {/* Decorative Gradient Background */}
-      <div className="absolute inset-x-0 top-0 -z-10 h-[500px] overflow-hidden opacity-30 dark:opacity-20 blur-3xl pointer-events-none">
-        <div className="absolute left-1/2 top-0 -translate-x-1/2 h-full w-[1000px] bg-gradient-to-tr from-indigo-500 via-purple-500 to-pink-500 rounded-full mix-blend-multiply filter" />
+    <div className="flex flex-col h-full bg-white dark:bg-slate-950 font-sans w-full relative">
+      
+      {/* Top Gradient Fade */}
+      <div className="absolute top-0 w-full h-24 bg-gradient-to-b from-white dark:from-slate-950 to-transparent z-10 pointer-events-none" />
+
+      {/* Main Chat Area */}
+      <div className="flex-1 overflow-y-auto px-4 py-8 md:px-0 scroll-smooth">
+        <div className="max-w-4xl mx-auto space-y-8 pb-32">
+          
+          {/* Empty State Welcome */}
+          {messages.length === 0 && (
+            <div className="flex flex-col items-center justify-center mt-20 text-center animate-in fade-in slide-in-from-bottom-8 duration-700">
+              <div className="w-20 h-20 bg-gradient-to-br from-indigo-500 to-purple-600 rounded-3xl flex items-center justify-center shadow-xl shadow-indigo-500/20 mb-8 transform -rotate-12">
+                <Target className="w-10 h-10 text-white" />
+              </div>
+              <h1 className="text-4xl md:text-5xl font-bold tracking-tight text-slate-900 dark:text-white mb-4">
+                What can I analyze for you today?
+              </h1>
+              <p className="text-lg text-slate-500 dark:text-slate-400 max-w-xl">
+                Paste a contract, Terms of Service, or upload a PDF document. I'll translate the legalese and expose hidden risks.
+              </p>
+            </div>
+          )}
+
+          {/* Messages List */}
+          {messages.map((message) => (
+            <div key={message.id} className="flex gap-4 md:gap-6 animate-in slide-in-from-bottom-4">
+              
+              {/* Avatar */}
+              <div className="shrink-0 mt-1">
+                {message.role === "user" ? (
+                  <div className="w-8 h-8 rounded-full bg-slate-200 dark:bg-slate-800 flex items-center justify-center">
+                    <User className="w-5 h-5 text-slate-600 dark:text-slate-300" />
+                  </div>
+                ) : (
+                  <div className="w-8 h-8 rounded-full bg-gradient-to-br from-indigo-500 to-violet-500 flex items-center justify-center shadow-md">
+                    <Bot className="w-5 h-5 text-white" />
+                  </div>
+                )}
+              </div>
+
+              {/* Message Content */}
+              <div className="flex-1 min-w-0">
+                <div className="font-semibold text-slate-900 dark:text-slate-100 mb-1">
+                  {message.role === "user" ? "You" : "LexiClear AI"}
+                </div>
+                
+                {/* User Message */}
+                {message.role === "user" && (
+                  <div className="text-slate-700 dark:text-slate-300 whitespace-pre-wrap text-base leading-relaxed bg-slate-50 dark:bg-slate-900/50 p-4 rounded-2xl rounded-tl-none border border-slate-100 dark:border-slate-800/50 inline-block max-w-full break-words">
+                    {message.content.length > 500 && !message.content.startsWith("Analyzed document:") 
+                      ? message.content.substring(0, 500) + "..." 
+                      : message.content}
+                  </div>
+                )}
+
+                {/* AI Error */}
+                {message.role === "assistant" && !message.analysis && (
+                  <div className="text-rose-500 dark:text-rose-400 py-2">
+                    {message.content}
+                  </div>
+                )}
+
+                {/* AI Analysis View */}
+                {message.role === "assistant" && message.analysis && (
+                  <div className="space-y-6">
+                    
+                    {/* Scores Row */}
+                    <div className="grid grid-cols-1 md:grid-cols-3 gap-4 mt-2">
+                      <div className={`flex items-center gap-4 p-4 rounded-2xl border ${getScoreColor(message.analysis.legal_score, "legal")}`}>
+                        <div className="p-3 bg-white dark:bg-black rounded-xl shadow-sm">
+                          <Scale className="w-6 h-6" />
+                        </div>
+                        <div>
+                          <p className="text-xs font-bold uppercase tracking-widest opacity-80">Precision</p>
+                          <div className="flex items-baseline gap-1">
+                            <span className="text-2xl font-black">{message.analysis.legal_score}</span>
+                            <span className="text-sm opacity-60">/10</span>
+                          </div>
+                        </div>
+                      </div>
+
+                      <div className={`flex items-center gap-4 p-4 rounded-2xl border ${getScoreColor(message.analysis.safety_score, "safety")}`}>
+                        <div className="p-3 bg-white dark:bg-black rounded-xl shadow-sm">
+                          <ShieldAlert className="w-6 h-6" />
+                        </div>
+                        <div>
+                          <p className="text-xs font-bold uppercase tracking-widest opacity-80">Safety</p>
+                          <div className="flex items-baseline gap-1">
+                            <span className="text-2xl font-black">{message.analysis.safety_score}</span>
+                            <span className="text-sm opacity-60">/10</span>
+                          </div>
+                        </div>
+                      </div>
+
+                      <div className={`flex items-center gap-4 p-4 rounded-2xl border ${getScoreColor(message.analysis.overall_score, "overall")}`}>
+                        <div className="p-3 bg-white dark:bg-black rounded-xl shadow-sm">
+                          <Target className="w-6 h-6" />
+                        </div>
+                        <div>
+                          <p className="text-xs font-bold uppercase tracking-widest opacity-80">Overall</p>
+                          <div className="flex items-baseline gap-1">
+                            <span className="text-2xl font-black">{message.analysis.overall_score}</span>
+                            <span className="text-sm opacity-60">/10</span>
+                          </div>
+                        </div>
+                      </div>
+                    </div>
+
+                    {/* Summary Bullet Points */}
+                    <div className="bg-slate-50 dark:bg-slate-900/50 p-6 md:p-8 rounded-3xl border border-slate-100 dark:border-slate-800">
+                      <h3 className="text-sm font-bold tracking-widest text-slate-500 uppercase mb-6">Key Takeaways</h3>
+                      <ul className="space-y-4">
+                        {message.analysis.summary.map((point, idx) => (
+                          <li key={idx} className="flex gap-4">
+                            <CheckCircle2 className="w-6 h-6 shrink-0 text-indigo-500 mt-0.5" />
+                            <p className="text-slate-700 dark:text-slate-300 leading-relaxed font-medium">{point}</p>
+                          </li>
+                        ))}
+                      </ul>
+                    </div>
+
+                  </div>
+                )}
+              </div>
+            </div>
+          ))}
+
+          {/* Loading Indicator */}
+          {isAnalyzing && (
+            <div className="flex gap-4 md:gap-6 animate-pulse">
+              <div className="w-8 h-8 rounded-full bg-gradient-to-br from-indigo-500 to-violet-500 flex items-center justify-center shrink-0 mt-1">
+                <Bot className="w-5 h-5 text-white animate-bounce" />
+              </div>
+              <div className="space-y-3 w-full max-w-md">
+                <div className="h-4 bg-slate-200 dark:bg-slate-800 rounded-full w-3/4"></div>
+                <div className="h-4 bg-slate-200 dark:bg-slate-800 rounded-full w-1/2"></div>
+              </div>
+            </div>
+          )}
+          
+          <div ref={messagesEndRef} />
+        </div>
       </div>
 
-      <main className="max-w-6xl mx-auto px-4 py-12 md:py-20 flex flex-col items-center">
-        
-        {/* Header section */}
-        <div className="text-center mb-16 space-y-4 max-w-2xl">
-          <div className="inline-flex items-center justify-center p-3 bg-white dark:bg-slate-900 shadow-xl shadow-indigo-500/10 rounded-2xl mb-4 border border-slate-100 dark:border-slate-800">
-            <ShieldCheck className="w-8 h-8 text-indigo-500" />
-          </div>
-          <h1 className="text-4xl md:text-6xl font-extrabold tracking-tight bg-clip-text text-transparent bg-gradient-to-r from-slate-900 via-indigo-800 to-slate-900 dark:from-white dark:via-indigo-300 dark:to-white">
-            LexiClear
-          </h1>
-          <p className="text-lg md:text-xl text-slate-600 dark:text-slate-400 font-medium">
-            Understand contracts in seconds. AI translates complex legalese and exposes hidden risks automatically.
-          </p>
-        </div>
-
-        <div className="w-full grid grid-cols-1 lg:grid-cols-12 gap-8 items-start">
-          
-          {/* Left Column: Input */}
-          <div className="lg:col-span-7 w-full flex flex-col space-y-4 bg-white dark:bg-slate-900 p-6 md:p-8 rounded-3xl shadow-2xl shadow-slate-200/50 dark:shadow-black/50 border border-slate-100 dark:border-slate-800 transition-all">
-            
-            <div className="flex justify-between items-end">
-              <label className="text-sm font-bold tracking-wide text-slate-700 dark:text-slate-300 uppercase">
-                Paste Legal Text
-              </label>
-              
-              <div className="relative">
-                <input 
-                  type="file" 
-                  accept=".pdf" 
-                  className="hidden" 
-                  ref={fileInputRef}
-                  onChange={handleFileUpload}
-                />
-                <button 
-                  onClick={() => fileInputRef.current?.click()}
-                  disabled={isPdfLoading || isLoading}
-                  className="flex items-center gap-2 px-4 py-2 text-sm font-semibold text-indigo-600 bg-indigo-50 dark:bg-indigo-500/10 dark:text-indigo-400 hover:bg-indigo-100 dark:hover:bg-indigo-500/20 rounded-xl transition-colors disabled:opacity-50"
-                >
-                  {isPdfLoading ? <Loader2 className="w-4 h-4 animate-spin" /> : <UploadCloud className="w-4 h-4" />}
-                  Upload PDF
-                </button>
-              </div>
-            </div>
-
-            <textarea
-              value={text}
-              onChange={(e) => setText(e.target.value)}
-              placeholder="Paste terms of service, privacy policy, or contract text here..."
-              className="w-full h-[400px] p-5 bg-slate-50 dark:bg-slate-950 border border-slate-200 dark:border-slate-800 rounded-2xl focus:ring-4 focus:ring-indigo-500/20 focus:border-indigo-500 outline-none text-base resize-none transition-all"
+      {/* Fixed Bottom Input Area */}
+      <div className="absolute bottom-0 w-full bg-gradient-to-t from-white via-white dark:from-slate-950 dark:via-slate-950 to-transparent pb-6 pt-12 px-4 md:px-0 z-20">
+        <div className="max-w-4xl mx-auto">
+          <form 
+            onSubmit={handleTextSubmit}
+            className="flex items-end gap-2 bg-slate-100 dark:bg-slate-900 rounded-3xl p-2 pl-4 shadow-lg border border-slate-200 dark:border-slate-800 focus-within:ring-2 focus-within:ring-indigo-500/50 transition-all"
+          >
+            {/* File Upload Hidden Input */}
+            <input 
+              type="file" 
+              accept=".pdf" 
+              className="hidden" 
+              ref={fileInputRef}
+              onChange={handleFileUpload}
             />
-            
-            <div className="flex items-center justify-between pt-2">
-              <span className="text-xs text-slate-500 dark:text-slate-400 font-medium bg-slate-100 dark:bg-slate-800 px-3 py-1 rounded-full">
-                {text.length.toLocaleString()} / 20,000 chars
-              </span>
-              
-              <button
-                onClick={handleAnalyze}
-                disabled={isLoading || isPdfLoading}
-                className="flex items-center gap-2 px-8 py-4 bg-slate-900 hover:bg-slate-800 dark:bg-indigo-600 dark:hover:bg-indigo-500 text-white font-bold rounded-2xl transition-all shadow-lg hover:shadow-xl disabled:opacity-50 disabled:cursor-not-allowed transform active:scale-[0.98]"
-              >
-                {isLoading ? (
-                  <>
-                    <Loader2 className="w-5 h-5 animate-spin" />
-                    Analyzing...
-                  </>
-                ) : (
-                  <>
-                    <FileText className="w-5 h-5" />
-                    Analyze Document
-                  </>
-                )}
-              </button>
-            </div>
-            
-            {error && (
-              <div className="mt-4 p-4 bg-rose-50 dark:bg-rose-500/10 border border-rose-200 dark:border-rose-500/20 rounded-xl text-rose-600 dark:text-rose-400 text-sm font-medium flex items-center gap-2">
-                <AlertTriangle className="w-4 h-4" />
-                {error}
-              </div>
-            )}
-          </div>
 
-          {/* Right Column: Dynamic Results */}
-          <div className="lg:col-span-5 w-full flex flex-col space-y-6">
-            
-            {/* Empty State */}
-            {!results && !isLoading && (
-              <div className="h-full min-h-[500px] flex flex-col items-center justify-center p-8 bg-slate-50 border-2 border-dashed border-slate-200 dark:bg-transparent dark:border-slate-800 rounded-3xl text-center">
-                <div className="w-16 h-16 bg-slate-100 dark:bg-slate-900 rounded-2xl flex items-center justify-center mb-4">
-                  <ShieldCheck className="w-8 h-8 text-slate-400" />
-                </div>
-                <h3 className="text-xl font-bold text-slate-700 dark:text-slate-300">Awaiting Document</h3>
-                <p className="text-slate-500 dark:text-slate-500 mt-2 max-w-sm">
-                  Paste text or upload a document to generate a plain-English summary and risk analysis.
-                </p>
-              </div>
-            )}
+            {/* Attachment Button */}
+            <button 
+              type="button"
+              onClick={() => fileInputRef.current?.click()}
+              disabled={isAnalyzing || isPdfLoading}
+              className="p-3 text-slate-400 hover:text-indigo-500 hover:bg-slate-200 dark:hover:bg-slate-800 rounded-full transition-colors shrink-0 disabled:opacity-50"
+              title="Upload PDF document"
+            >
+              {isPdfLoading ? <Loader2 className="w-6 h-6 animate-spin" /> : <Paperclip className="w-6 h-6" />}
+            </button>
 
-            {/* Loading Pulse */}
-            {isLoading && (
-              <div className="h-full min-h-[500px] animate-pulse flex flex-col space-y-6">
-                <div className="bg-slate-200 dark:bg-slate-800 h-48 rounded-3xl w-full"></div>
-                <div className="bg-slate-200 dark:bg-slate-800 h-64 rounded-3xl w-full"></div>
-              </div>
-            )}
+            {/* Text Area */}
+            <textarea
+              value={inputValue}
+              onChange={(e) => setInputValue(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key === 'Enter' && !e.shiftKey) {
+                  e.preventDefault();
+                  handleTextSubmit();
+                }
+              }}
+              placeholder="Paste contract text or ask for an analysis..."
+              className="w-full max-h-48 min-h-[56px] py-4 bg-transparent outline-none resize-none text-slate-700 dark:text-slate-200 text-base"
+              rows={1}
+            />
 
-            {/* AI Results */}
-            {results && !isLoading && (() => {
-              const details = getRiskDetails(results.risk_score);
-              const Icon = details.icon;
-              
-              return (
-                <>
-                  {/* Risk Score Card */}
-                  <div className="bg-white dark:bg-slate-900 p-8 rounded-3xl shadow-xl shadow-slate-200/50 dark:shadow-black/50 border border-slate-100 dark:border-slate-800 relative overflow-hidden group">
-                     {/* Card Graphic */}
-                    <div className={`absolute -right-12 -top-12 w-40 h-40 opacity-10 blur-2xl rounded-full ${details.bg}`} />
-                    
-                    <h3 className="text-sm font-bold tracking-widest text-slate-500 uppercase overflow-visible">Risk Assessment</h3>
-                    <div className="mt-6 flex items-end gap-4">
-                      <span className={`text-6xl font-black ${details.color} tabular-nums leading-none tracking-tighter`}>
-                        {results.risk_score}
-                      </span>
-                      <span className="text-xl text-slate-400 font-bold mb-1">/ 10</span>
-                    </div>
-
-                    <div className="mt-4 flex items-center gap-2 font-bold text-lg">
-                      <Icon className={`w-5 h-5 ${details.color}`} />
-                      <span className={details.color}>{details.label}</span>
-                    </div>
-
-                    {/* Progress Bar */}
-                    <div className="mt-6 h-3 w-full bg-slate-100 dark:bg-slate-800 rounded-full overflow-hidden flex">
-                      <div 
-                        className={`h-full rounded-full transition-all duration-1000 ease-out bg-gradient-to-r ${results.risk_score <= 3 ? 'from-emerald-400 to-emerald-500' : results.risk_score <= 6 ? 'from-amber-400 to-amber-500' : 'from-rose-400 to-rose-500'}`}
-                        style={{ width: `${(results.risk_score / 10) * 100}%` }}
-                      />
-                    </div>
-                  </div>
-
-                  {/* Summary Card */}
-                  <div className="bg-white dark:bg-slate-900 p-8 rounded-3xl shadow-xl shadow-slate-200/50 dark:shadow-black/50 border border-slate-100 dark:border-slate-800">
-                    <h3 className="text-sm font-bold tracking-widest text-slate-500 uppercase mb-6 overflow-visible">Plain English Summary</h3>
-                    
-                    <ul className="space-y-4">
-                      {results.summary.map((point, index) => (
-                        <li key={index} className="flex gap-4">
-                          <CheckCircle2 className="w-6 h-6 shrink-0 text-indigo-500" />
-                          <p className="text-slate-700 dark:text-slate-300 font-medium leading-relaxed">{point}</p>
-                        </li>
-                      ))}
-                    </ul>
-                  </div>
-                </>
-              );
-            })()}
-
+            {/* Submit Button */}
+            <button 
+              type="submit"
+              disabled={!inputValue.trim() || isAnalyzing || isPdfLoading}
+              className="p-3 bg-indigo-600 hover:bg-indigo-500 text-white rounded-2xl transition-all disabled:opacity-50 disabled:bg-slate-300 dark:disabled:bg-slate-800 disabled:text-slate-500 shrink-0 shadow-sm"
+            >
+              <Send className="w-6 h-6" />
+            </button>
+          </form>
+          <div className="text-center mt-3 text-xs text-slate-400 dark:text-slate-500 font-medium tracking-wide">
+            LexiClear can make mistakes. Consider verifying critical legal information.
           </div>
         </div>
-      </main>
+      </div>
+
     </div>
   );
 }

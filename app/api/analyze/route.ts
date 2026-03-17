@@ -36,19 +36,27 @@ export async function POST(req: NextRequest) {
               items: { type: SchemaType.STRING },
               description: "A 3 to 5 point plain English summary of the legal text, focusing on what the average user actually needs to know.",
             },
-            risk_score: {
+            legal_score: {
               type: SchemaType.INTEGER,
-              description: "A risk score from 1 to 10 evaluating the presence of predatory, aggressive, or unusually restrictive clauses.",
+              description: "A score from 1 to 10 indicating how standard and legally precise the document is (10 = exceptionally written and standard, 1 = poorly drafted).",
+            },
+            safety_score: {
+              type: SchemaType.INTEGER,
+              description: "A score from 1 to 10 indicating how safe the document is for the user (10 = very safe, 1 = highly predatory/risky like forced arbitration).",
+            },
+            overall_score: {
+              type: SchemaType.INTEGER,
+              description: "The overall average score from 1 to 10.",
             },
           },
-          required: ["summary", "risk_score"],
+          required: ["summary", "legal_score", "safety_score", "overall_score"],
         },
       },
     });
 
     const prompt = `You are an expert legal analyst. Analyze the following legal text (e.g., terms of service, contract, or privacy policy).
     Translate the complex legalese into simple, plain English bullet points. 
-    Also, calculate a risk score from 1 to 10 where 1 is completely safe/standard, and 10 means highly predatory/risky (e.g. forced arbitration, hidden fees, rights grabbing).
+    Calculate a legal_score (1-10) evaluating drafting precision, a safety_score (1-10) where 10 is safest and 1 is predatory, and an overall_score.
     Focus specifically on what the user is giving up, paying, or agreeing to.
     
     DOCUMENT TEXT:
