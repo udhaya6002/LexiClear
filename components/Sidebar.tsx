@@ -1,17 +1,32 @@
 "use client";
 
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import { useAuth } from "@/contexts/AuthContext";
 import { MessageSquarePlus, Clock, Settings, LogOut, Menu, X, ShieldCheck } from "lucide-react";
 import { signOut } from "firebase/auth";
-import { auth } from "@/lib/firebase";
+import { auth, db } from "@/lib/firebase";
+import { collection, query, orderBy, onSnapshot } from "firebase/firestore";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 
 export default function Sidebar() {
   const [isOpen, setIsOpen] = useState(false);
+  const [scans, setScans] = useState<any[]>([]);
   const { user } = useAuth();
   const router = useRouter();
+
+  useEffect(() => {
+    if (!user) {
+      setScans([]);
+      return;
+    }
+    const q = query(collection(db, "users", user.uid, "scans"), orderBy("createdAt", "desc"));
+    const unsubscribe = onSnapshot(q, (snapshot) => {
+      const results = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
+      setScans(results);
+    });
+    return () => unsubscribe();
+  }, [user]);
 
   const handleLogout = async () => {
     await signOut(auth);
@@ -44,15 +59,26 @@ export default function Sidebar() {
         
         {user ? (
           <div className="space-y-1">
-            {/* Placeholder for Firestore items */}
-            <button className="w-full text-left px-3 py-2 text-sm text-slate-700 dark:text-slate-300 hover:bg-slate-200 dark:hover:bg-slate-800 rounded-xl truncate flex items-center gap-3 transition-colors">
-              <Clock className="w-4 h-4 text-slate-400 shrink-0" />
-              <span className="truncate">Sample Uber ToS...</span>
-            </button>
-            <button className="w-full text-left px-3 py-2 text-sm text-slate-700 dark:text-slate-300 hover:bg-slate-200 dark:hover:bg-slate-800 rounded-xl truncate flex items-center gap-3 transition-colors">
-              <Clock className="w-4 h-4 text-slate-400 shrink-0" />
-              <span className="truncate">Lease Agreement 2024</span>
-            </button>
+            {scans.length === 0 ? (
+              <div className="px-2 py-4 text-center border-2 border-dashed border-slate-300 dark:border-slate-800 rounded-xl">
+                <p className="text-sm text-slate-500 mb-3">No scans yet.</p>
+              </div>
+            ) : (
+              scans.map(scan => (
+                <button 
+                  key={scan.id}
+                  onClick={() => {
+                    router.push(`/?scanId=${scan.id}`);
+                    setIsOpen(false);
+                  }}
+                  className="w-full text-left px-3 py-2 text-sm text-slate-700 dark:text-slate-300 hover:bg-slate-200 dark:hover:bg-slate-800 rounded-xl truncate flex items-center gap-3 transition-colors"
+                  title={scan.title}
+                >
+                  <Clock className="w-4 h-4 text-slate-400 shrink-0" />
+                  <span className="truncate">{scan.title || "Scan"}</span>
+                </button>
+              ))
+            )}
           </div>
         ) : (
           <div className="px-2 py-4 text-center border-2 border-dashed border-slate-300 dark:border-slate-800 rounded-xl">

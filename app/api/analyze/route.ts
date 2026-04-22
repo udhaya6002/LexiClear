@@ -25,7 +25,7 @@ export async function POST(req: NextRequest) {
     
     // We instantiate the model and strictly enforce the JSON output schema
     const model = genAI.getGenerativeModel({
-      model: "gemini-2.0-flash", // Fast and capable model
+      model: "gemini-2.5-flash", // Fast and capable model
       generationConfig: {
         responseMimeType: "application/json",
         responseSchema: {

@@ -2,6 +2,10 @@
 
 import { useState, useRef, useEffect } from "react";
 import { UploadCloud, FileText, CheckCircle2, Send, Paperclip, Bot, User, Scale, ShieldAlert, Target, Loader2 } from "lucide-react";
+import { useAuth } from "@/contexts/AuthContext";
+import { db } from "@/lib/firebase";
+import { collection, addDoc, serverTimestamp, doc, getDoc, updateDoc } from "firebase/firestore";
+import { useSearchParams, useRouter } from "next/navigation";
 
 interface AIResponse {
   summary: string[];
@@ -24,6 +28,57 @@ export default function Home() {
   const [isPdfLoading, setIsPdfLoading] = useState(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const messagesEndRef = useRef<HTMLDivElement>(null);
+  const { user } = useAuth();
+  const searchParams = useSearchParams();
+  const scanId = searchParams.get("scanId");
+  const router = useRouter();
+
+  const [documentContext, setDocumentContext] = useState("");
+  const [currentScanId, setCurrentScanId] = useState<string | null>(scanId);
+
+  // Load old scan
+  useEffect(() => {
+    async function loadOldScan() {
+      if (scanId && user) {
+        setIsAnalyzing(true);
+        try {
+          const scanRef = doc(db, "users", user.uid, "scans", scanId);
+          const scanSnap = await getDoc(scanRef);
+          if (scanSnap.exists()) {
+            const data = scanSnap.data();
+            setDocumentContext(data.textContent || "");
+            setCurrentScanId(scanId);
+            setMessages(data.messages || [
+              {
+                id: scanId + "-user",
+                role: "user",
+                content: data.title || "Analyzed Document",
+              },
+              {
+                id: scanId + "-assistant",
+                role: "assistant",
+                content: "Analysis complete.",
+                analysis: data.analysis,
+              }
+            ]);
+          } else {
+            setMessages([]);
+            setDocumentContext("");
+            setCurrentScanId(null);
+          }
+        } catch (e) {
+          console.error(e);
+        } finally {
+          setIsAnalyzing(false);
+        }
+      } else if (!scanId) {
+        setMessages([]);
+        setDocumentContext("");
+        setCurrentScanId(null);
+      }
+    }
+    loadOldScan();
+  }, [scanId, user]);
 
   // Auto-scroll to bottom
   useEffect(() => {
@@ -38,7 +93,7 @@ export default function Home() {
     try {
       // Dynamically import pdfjs-dist only on the client side
       const pdfjsLib = await import("pdfjs-dist");
-      pdfjsLib.GlobalWorkerOptions.workerSrc = `//cdnjs.cloudflare.com/ajax/libs/pdf.js/${pdfjsLib.version}/pdf.worker.min.mjs`;
+      pdfjsLib.GlobalWorkerOptions.workerSrc = `https://unpkg.com/pdfjs-dist@${pdfjsLib.version}/build/pdf.worker.min.mjs`;
       
       const arrayBuffer = await file.arrayBuffer();
       const pdf = await pdfjsLib.getDocument({ data: arrayBuffer }).promise;
@@ -75,7 +130,60 @@ export default function Home() {
     
     const textToAnalyze = inputValue;
     setInputValue("");
-    await submitAnalysis(textToAnalyze, textToAnalyze);
+
+    if (messages.length === 0) {
+      await submitAnalysis(textToAnalyze, textToAnalyze);
+    } else {
+      await submitFollowUp(textToAnalyze);
+    }
+  };
+
+  const submitFollowUp = async (text: string) => {
+    if (isAnalyzing) return;
+    setIsAnalyzing(true);
+
+    const userMsg: Message = { id: Date.now().toString(), role: "user", content: text };
+    const newMessages = [...messages, userMsg];
+    setMessages(newMessages);
+
+    try {
+      const response = await fetch("/api/chat", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ messages: newMessages, documentContext }),
+      });
+      const data = await response.json();
+      if (!response.ok) throw new Error(data.error || "Chat failed.");
+
+      const aiMsg: Message = {
+        id: (Date.now() + 1).toString(),
+        role: "assistant",
+        content: data.reply
+      };
+      
+      const updatedMessages = [...newMessages, aiMsg];
+      setMessages(updatedMessages);
+
+      if (user && currentScanId) {
+        try {
+          await updateDoc(doc(db, "users", user.uid, "scans", currentScanId), {
+            messages: updatedMessages
+          });
+        } catch (e) {
+          console.error("Failed to update Firestore", e);
+        }
+      }
+
+    } catch (err: any) {
+      console.error(err);
+      setMessages(prev => [...prev, {
+        id: (Date.now() + 1).toString(),
+        role: "assistant",
+        content: `Error: ${err.message || "An unexpected error occurred."}`
+      }]);
+    } finally {
+      setIsAnalyzing(false);
+    }
   };
 
   const submitAnalysis = async (rawText: string, displayMessage: string) => {
@@ -115,6 +223,28 @@ export default function Home() {
         analysis: data
       };
       setMessages(prev => [...prev, aiMsg]);
+
+      // 4. Save to Firestore if logged in
+      if (user) {
+        try {
+          let shortTitle = displayMessage.replace("Analyzed document: ", "");
+          shortTitle = shortTitle.substring(0, 40) + (shortTitle.length > 40 ? "..." : "");
+          
+          const newScanData = {
+            title: shortTitle,
+            textContent: submitText,
+            analysis: data,
+            messages: [...messages, userMsg, aiMsg],
+            createdAt: serverTimestamp()
+          };
+
+          const docRef = await addDoc(collection(db, "users", user.uid, "scans"), newScanData);
+          setCurrentScanId(docRef.id);
+          setDocumentContext(submitText);
+        } catch (e) {
+          console.error("Failed to save to Firestore", e);
+        }
+      }
 
     } catch (err: any) {
       console.error(err);
@@ -193,15 +323,22 @@ export default function Home() {
                 {/* User Message */}
                 {message.role === "user" && (
                   <div className="text-slate-700 dark:text-slate-300 whitespace-pre-wrap text-base leading-relaxed bg-slate-50 dark:bg-slate-900/50 p-4 rounded-2xl rounded-tl-none border border-slate-100 dark:border-slate-800/50 inline-block max-w-full break-words">
-                    {message.content.length > 500 && !message.content.startsWith("Analyzed document:") 
-                      ? message.content.substring(0, 500) + "..." 
+                    {message.content && message.content.length > 600 && !message.content.startsWith("Analyzed document:") 
+                      ? message.content.substring(0, 600) + "..." 
                       : message.content}
                   </div>
                 )}
 
                 {/* AI Error */}
-                {message.role === "assistant" && !message.analysis && (
+                {message.role === "assistant" && !message.analysis && message.content && message.content.startsWith("Error:") && (
                   <div className="text-rose-500 dark:text-rose-400 py-2">
+                    {message.content}
+                  </div>
+                )}
+
+                {/* AI Text Reply (Follow up chat) */}
+                {message.role === "assistant" && !message.analysis && !message.content.startsWith("Error:") && (
+                  <div className="text-slate-700 dark:text-slate-300 whitespace-pre-wrap text-base leading-relaxed font-normal">
                     {message.content}
                   </div>
                 )}
