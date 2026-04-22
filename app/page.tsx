@@ -21,7 +21,9 @@ interface Message {
   analysis?: AIResponse; // Only populated for assistant messages
 }
 
-export default function Home() {
+import { Suspense } from "react";
+
+export function ChatInterface() {
   const [messages, setMessages] = useState<Message[]>([]);
   const [inputValue, setInputValue] = useState("");
   const [isAnalyzing, setIsAnalyzing] = useState(false);
@@ -483,5 +485,13 @@ export default function Home() {
       </div>
 
     </div>
+  );
+}
+
+export default function Home() {
+  return (
+    <Suspense fallback={<div className="h-screen w-full flex items-center justify-center"><Loader2 className="w-8 h-8 animate-spin text-indigo-500" /></div>}>
+      <ChatInterface />
+    </Suspense>
   );
 }
