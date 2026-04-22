@@ -22,7 +22,7 @@ export default function SignupPage() {
     try {
       const userCredential = await createUserWithEmailAndPassword(auth, email, password);
       const user = userCredential.user;
-      
+
       // Initialize Firestore profile
       await setDoc(doc(db, "users", user.uid), {
         email: user.email,
@@ -54,8 +54,8 @@ export default function SignupPage() {
             <label className="block text-sm font-medium text-slate-700 dark:text-slate-300 mb-1">Email</label>
             <div className="relative">
               <Mail className="w-5 h-5 text-slate-400 absolute left-3 top-1/2 -translate-y-1/2" />
-              <input 
-                type="email" 
+              <input
+                type="email"
                 required
                 value={email}
                 onChange={(e) => setEmail(e.target.value)}
@@ -64,13 +64,13 @@ export default function SignupPage() {
               />
             </div>
           </div>
-          
+
           <div>
             <label className="block text-sm font-medium text-slate-700 dark:text-slate-300 mb-1">Password</label>
             <div className="relative">
               <Lock className="w-5 h-5 text-slate-400 absolute left-3 top-1/2 -translate-y-1/2" />
-              <input 
-                type="password" 
+              <input
+                type="password"
                 required
                 value={password}
                 onChange={(e) => setPassword(e.target.value)}
@@ -83,8 +83,9 @@ export default function SignupPage() {
 
           {error && <p className="text-rose-500 text-sm mt-2 font-medium">{error}</p>}
 
-          <button 
-            type="submit" 
+
+          <button
+            type="submit"
             disabled={loading}
             className="w-full py-3 px-4 bg-indigo-600 hover:bg-indigo-700 text-white font-semibold rounded-xl transition-all shadow-lg shadow-indigo-500/30 flex items-center justify-center gap-2 mt-6"
           >
